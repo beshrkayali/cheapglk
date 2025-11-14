@@ -3,6 +3,7 @@
 #include <string.h>
 #include "glk.h"
 #include "cheapglk.h"
+#include "glk_llm.h"
 
 static unsigned char char_tolower_table[256];
 static unsigned char char_toupper_table[256];
@@ -51,6 +52,7 @@ void gli_initialize_misc()
         }
     }
 
+    gli_llm_init();
 }
 
 void glk_exit()
@@ -171,6 +173,20 @@ void glk_select(event_t *event)
             /* If debug mode is on, it may capture input, in which case
                we need to loop until real input arrives. */
 
+            // Check if we have queued commands from LLM multi-step interpretation
+            if (gli_llm_config.enabled && gli_llm_context.queue_count > 0) {
+                // Pop command from queue
+                int head = gli_llm_context.queue_head;
+                strncpy(buf, gli_llm_context.command_queue[head], 255);
+                buf[255] = '\0';
+                gli_llm_context.queue_head = (head + 1) % GLK_LLM_MAX_QUEUED_COMMANDS;
+                gli_llm_context.queue_count--;
+
+                val = strlen(buf);
+                printf("[Auto: %s]\n", buf);
+                break;
+            }
+
             res = fgets(buf, 255, stdin);
             if (!res) {
                 printf("\n<end of input>\n");
@@ -191,8 +207,45 @@ void glk_select(event_t *event)
         }
 
         val = strlen(buf);
+
         if (val && (buf[val-1] == '\n' || buf[val-1] == '\r'))
             val--;
+
+        /* LLM processing */
+        if (gli_llm_config.enabled && val > 0) {
+            char original_input[256];
+            char interpreted_input[256];
+
+            strncpy(original_input, buf, val);
+            original_input[val] = '\0';
+
+            /* Players can skip LLm interpretation by wrapping their
+               input with [] */
+            int skip_llm = 0;
+
+            if (original_input[0] == '[' && val > 1 && original_input[val-1] == ']') {
+                skip_llm = 1;
+                // Remove the brackets
+                val -= 2;
+                memmove(original_input, original_input + 1, val);
+                original_input[val] = '\0';
+                // Copy back to buf for later processing
+                strncpy(buf, original_input, val);
+                buf[val] = '\0';
+            }
+
+            strncpy(gli_llm_context.last_user_input, original_input, sizeof(gli_llm_context.last_user_input) - 1);
+            gli_llm_context.last_user_input[sizeof(gli_llm_context.last_user_input) - 1] = '\0';
+
+            if (!skip_llm && gli_llm_process_input(original_input, interpreted_input, sizeof(interpreted_input))) {
+                if (gli_llm_config.echo_interpretation) {
+                    printf("[LLM: \"%s\" -> \"%s\"]\n", original_input, interpreted_input);
+                }
+                strncpy(buf, interpreted_input, 255);
+                buf[255] = '\0';
+                val = strlen(buf);
+            }
+        }
 
         if (!gli_utf8input) {
             if (val > win->linebuflen)

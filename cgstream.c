@@ -4,6 +4,10 @@
 #include "glk.h"
 #include "cheapglk.h"
 #include "gi_blorb.h"
+#include "glk_llm.h"
+
+static char gli_llm_output_buffer[512];
+static int gli_llm_output_buffer_pos = 0;
 
 /* This implements pretty much what any Glk implementation needs for 
     stream stuff. Memory streams, file streams (using stdio functions), 
@@ -664,15 +668,29 @@ static void gli_put_char(stream_t *str, unsigned char ch)
                 gli_strict_warning("put_char: window has pending line request");
                 break;
             }
-            /* If you're going to convert Latin-1 to a different 
-                character set, this is (a) place to do it. Only on the 
-                putc(); not on the gli_put_char to echostr. */
+            /* Normal output */
             if (!gli_utf8output) 
                 putc(ch, stdout);
             else
                 gli_putchar_utf8(ch, stdout);
             if (str->win->echostr)
                 gli_put_char(str->win->echostr, ch);
+
+            /* Track output for LLM context */
+            if (gli_llm_config.enabled) {
+                if (ch >= 32 || ch == '\t') {
+                    if (gli_llm_output_buffer_pos < sizeof(gli_llm_output_buffer) - 1) {
+                        gli_llm_output_buffer[gli_llm_output_buffer_pos++] = ch;
+                    }
+                }
+                if (ch == '\n' || gli_llm_output_buffer_pos >= sizeof(gli_llm_output_buffer) - 1) {
+                    if (gli_llm_output_buffer_pos > 0) {
+                        gli_llm_output_buffer[gli_llm_output_buffer_pos] = '\0';
+                        gli_llm_add_context(gli_llm_output_buffer);
+                        gli_llm_output_buffer_pos = 0;
+                    }
+                }
+            }
             break;
         case strtype_File:
             gli_stream_ensure_op(str, filemode_Write);

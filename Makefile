@@ -17,15 +17,20 @@ CC = cc
 
 OPTIONS = -g -Wall
 
-CFLAGS = $(OPTIONS) $(INCLUDEDIRS)
+# Detect OpenSSL location
+OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+
+CFLAGS = $(OPTIONS) $(INCLUDEDIRS) $(OPENSSL_CFLAGS)
+LIBS = -lssl -lcrypto
 
 GLKLIB = libcheapglk.a
 
 CHEAPGLK_OBJS =  \
   cgfref.o cggestal.o cgmisc.o cgstream.o cgstyle.o cgwindow.o cgschan.o \
-  cgdate.o cgunicod.o main.o gi_dispa.o gi_blorb.o gi_debug.o cgblorb.o
+  cgdate.o cgunicod.o main.o gi_dispa.o gi_blorb.o gi_debug.o cgblorb.o \
+  cgllm.o
 
-CHEAPGLK_HEADERS = cheapglk.h gi_dispa.h gi_debug.h
+CHEAPGLK_HEADERS = cheapglk.h gi_dispa.h gi_debug.h glk_llm.h
 
 all: $(GLKLIB) Make.cheapglk
 
@@ -35,8 +40,11 @@ $(GLKLIB): $(CHEAPGLK_OBJS)
 	ar r $(GLKLIB) $(CHEAPGLK_OBJS)
 	ranlib $(GLKLIB)
 
+cgllm.o: cgllm.c glk_llm.h
+	$(CC) $(CFLAGS) -c cgllm.c
+
 Make.cheapglk:
-	echo LINKLIBS = $(LIBDIRS) $(LIBS) > Make.cheapglk
+	echo LINKLIBS = $(LIBDIRS) -lssl -lcrypto > Make.cheapglk
 	echo GLKLIB = -lcheapglk >> Make.cheapglk
 
 $(CHEAPGLK_OBJS): glk.h $(CHEAPGLK_HEADERS)

@@ -1,0 +1,36 @@
+# CheapGlk LLM Configuration Example
+# Copy this to ~/.glk_llm.conf and customize
+
+# Enable LLM processing (0=disabled, 1=enabled)
+enabled=0
+
+# API endpoint (OpenAI-compatible)
+# Examples:
+#   OpenAI: https://api.openai.com/v1/chat/completions
+#   OpenRouter: https://openrouter.ai/api/v1/chat/completions  
+#   Ollama: http://localhost:11434/v1/chat/completions
+api_endpoint=https://api.openai.com/v1/chat/completions
+
+# API key (get from your LLM provider)
+api_key=sk-your-api-key-here
+
+# Model to use
+# Examples:
+#   OpenAI: gpt-3.5-turbo, gpt-4, gpt-4-turbo, ...
+#   OpenRouter: google/gemini-2.5-flash, ...
+#   Ollama: llama2, mistral, codellama, ...
+model=gpt-3.5-turbo
+
+# Number of recent game output lines to include as context
+# Range: 0-20, Default: 10
+# More context = better interpretations but higher token usage
+context_lines=10
+
+# Request timeout in milliseconds
+# Default: 5000 (5 seconds)
+timeout_ms=5000
+
+# Show LLM interpretation to player
+# 0 = silent (command is replaced transparently)
+# 1 = show [LLM: "original" -> "interpreted"] message and available actions
+echo_interpretation=1
