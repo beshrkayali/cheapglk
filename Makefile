@@ -49,5 +49,27 @@ Make.cheapglk:
 
 $(CHEAPGLK_OBJS): glk.h $(CHEAPGLK_HEADERS)
 
+# WebAssembly build targets
+EMCC = emcc
+WASM_CFLAGS = -O2 -s WASM=1 \
+	-s ALLOW_MEMORY_GROWTH=1 \
+	-DWASM_BUILD
+
+CHEAPGLK_WASM_OBJS = $(CHEAPGLK_OBJS:.o=.wasm.o)
+
+%.wasm.o: %.c
+	$(EMCC) $(WASM_CFLAGS) $(INCLUDEDIRS) -c $< -o $@
+
+libcheapglk.wasm.a: $(CHEAPGLK_WASM_OBJS)
+	emar rcs libcheapglk.wasm.a $(CHEAPGLK_WASM_OBJS)
+
+wasm: libcheapglk.wasm.a
+	@echo "CheapGlk WASM library built. Now run 'make wasm' in ../glulxe"
+
+clean-wasm:
+	rm -f *.wasm.o libcheapglk.wasm.a
+
 clean:
 	rm -f *~ *.o $(GLKLIB) Make.cheapglk
+
+.PHONY: wasm clean-wasm

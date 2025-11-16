@@ -5,6 +5,45 @@
 #include "cheapglk.h"
 #include "glk_llm.h"
 
+#ifdef WASM_BUILD
+#include <emscripten.h>
+
+// Check if input is available
+EM_JS(int, wasm_input_ready, (), {
+    return (Module.wasmInputLine !== null && Module.wasmInputLine !== undefined) ? 1 : 0;
+});
+
+// Get the input line
+EM_JS(int, wasm_get_input_line, (char* buf, int maxlen), {
+    var line = Module.wasmInputLine;
+    Module.wasmInputLine = null;
+
+    if (line) {
+        stringToUTF8(line, buf, maxlen);
+        return 1;
+    }
+    return 0;
+});
+
+// Flush stdout buffer to ensure prompts appear immediately
+EM_JS(void, wasm_flush_stdout, (), {
+    if (typeof Module.flushStdout === 'function') {
+        Module.flushStdout();
+    }
+});
+
+// Wait for input and get it - uses emscripten_sleep for yielding
+static int wasm_get_input(char* buf, int maxlen) {
+    // Poll until input is ready
+    while (!wasm_input_ready()) {
+        emscripten_sleep(50);  // Yield to browser event loop
+    }
+
+    // Get the input
+    return wasm_get_input_line(buf, maxlen);
+}
+#endif
+
 static unsigned char char_tolower_table[256];
 static unsigned char char_toupper_table[256];
 
@@ -91,13 +130,21 @@ void glk_select(event_t *event)
         }
     }
     fflush(stdout);
+#ifdef WASM_BUILD
+    wasm_flush_stdout();  // Ensure prompts are visible in browser
+#endif
 
     if (!win || !(win->char_request || win->line_request)) {
         /* No input requests. This is legal, but a pity, because the
             correct behavior is to wait forever. Bye bye. */
+#ifdef WASM_BUILD
+        /* In WASM, just return instead of blocking forever */
+        return;
+#else
         while (1) {
             getchar();
         }
+#endif
     }
     
     if (win->char_request) {
@@ -116,11 +163,19 @@ void glk_select(event_t *event)
             /* If debug mode is on, it may capture input, in which case
                we need to loop until real input arrives. */
 
+#ifdef WASM_BUILD
+            if (!wasm_get_input(buf, 255)) {
+                printf("\n<end of input>\n");
+                glk_exit();
+            }
+            res = buf;
+#else
             res = fgets(buf, 255, stdin);
             if (!res) {
                 printf("\n<end of input>\n");
                 glk_exit();
             }
+#endif
 
             if (gli_debugger) {
                 if (buf[0] == '/') {
@@ -187,11 +242,19 @@ void glk_select(event_t *event)
                 break;
             }
 
+#ifdef WASM_BUILD
+            if (!wasm_get_input(buf, 255)) {
+                printf("\n<end of input>\n");
+                glk_exit();
+            }
+            res = buf;
+#else
             res = fgets(buf, 255, stdin);
             if (!res) {
                 printf("\n<end of input>\n");
                 glk_exit();
             }
+#endif
 
             if (gli_debugger) {
                 if (buf[0] == '/') {
@@ -470,11 +533,19 @@ void gidebug_pause()
         char *res;
         int unpause;
 
+#ifdef WASM_BUILD
+        if (!wasm_get_input(buf, 255)) {
+            printf("\n<end of input>\n");
+            break;
+        }
+        res = buf;
+#else
         res = fgets(buf, 255, stdin);
         if (!res) {
             printf("\n<end of input>\n");
             break;
         }
+#endif
 
         /* The slash is optional at the beginning of a line grabbed this
            way. */

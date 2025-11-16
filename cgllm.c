@@ -1,14 +1,43 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef WASM_BUILD
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#endif
 #include "glk.h"
 #include "cheapglk.h"
 #include "glk_llm.h"
+
+#ifdef WASM_BUILD
+#include <emscripten.h>
+
+// JavaScript function that will handle the LLM API call
+EM_JS(int, js_llm_process_input, (const char* input, const char* context_json, const char* scene_info, char* output, int maxlen), {
+    try {
+        const inputStr = UTF8ToString(input);
+        const contextStr = UTF8ToString(context_json);
+        const sceneStr = UTF8ToString(scene_info);
+
+        if (typeof Module.processLLMInput === 'function') {
+            const result = Module.processLLMInput(inputStr, contextStr, sceneStr);
+            if (result) {
+                stringToUTF8(result, output, maxlen);
+                return 1;
+            }
+        }
+        stringToUTF8(inputStr, output, maxlen);
+        return 0;
+    } catch(e) {
+        console.error('LLM processing error:', e);
+        stringToUTF8(UTF8ToString(input), output, maxlen);
+        return 0;
+    }
+});
+#endif
 
 glk_llm_config_t gli_llm_config;
 glk_llm_context_t gli_llm_context;
@@ -23,6 +52,7 @@ void gli_llm_init(void)
     gli_llm_config.timeout_ms = 5000;
     gli_llm_config.echo_interpretation = 1;
 
+#ifndef WASM_BUILD
     char *config_file = getenv("GLK_LLM_CONFIG");
     if (config_file) {
         gli_llm_load_config(config_file);
@@ -31,6 +61,7 @@ void gli_llm_init(void)
         snprintf(default_config, sizeof(default_config), "%s/.glk_llm.conf", getenv("HOME"));
         gli_llm_load_config(default_config);
     }
+#endif
 }
 
 void gli_llm_load_config(const char *config_file)
@@ -221,7 +252,47 @@ static int parse_url(const char *url, char *protocol, char *host, int *port, cha
 
 int gli_llm_process_input(const char *input, char *output, glui32 maxlen)
 {
-    if (!gli_llm_config.enabled || !gli_llm_config.api_endpoint[0]) {
+    if (!gli_llm_config.enabled) {
+        strncpy(output, input, maxlen);
+        output[maxlen - 1] = '\0';
+        return 0;
+    }
+
+#ifdef WASM_BUILD
+    // In WASM build, prepare context and delegate to JavaScript
+    char context_json[4096] = "";
+    if (gli_llm_config.context_lines > 0 && gli_llm_context.count > 0) {
+        int start = gli_llm_context.position - gli_llm_context.count;
+        if (start < 0) start += GLK_LLM_CONTEXT_LINES;
+
+        for (int i = 0; i < gli_llm_context.count && i < gli_llm_config.context_lines; i++) {
+            int idx = (start + i) % GLK_LLM_CONTEXT_LINES;
+            if (strlen(context_json) + strlen(gli_llm_context.lines[idx]) + 2 < sizeof(context_json)) {
+                strcat(context_json, gli_llm_context.lines[idx]);
+                strcat(context_json, "\n");
+            }
+        }
+    }
+
+    char scene_info[2048] = "";
+    if (gli_llm_context.count > 0) {
+        int lines_to_include = (gli_llm_context.count < 5) ? gli_llm_context.count : 5;
+        int start_idx = gli_llm_context.position - lines_to_include;
+        if (start_idx < 0) start_idx += GLK_LLM_CONTEXT_LINES;
+
+        for (int i = 0; i < lines_to_include; i++) {
+            int idx = (start_idx + i) % GLK_LLM_CONTEXT_LINES;
+            if (gli_llm_context.lines[idx][0]) {
+                strncat(scene_info, gli_llm_context.lines[idx], sizeof(scene_info) - strlen(scene_info) - 1);
+                strncat(scene_info, "\n", sizeof(scene_info) - strlen(scene_info) - 1);
+            }
+        }
+    }
+
+    int changed = js_llm_process_input(input, context_json, scene_info, output, maxlen);
+    return changed;
+#else
+    if (!gli_llm_config.api_endpoint[0]) {
         strncpy(output, input, maxlen);
         output[maxlen - 1] = '\0';
         return 0;
@@ -360,58 +431,81 @@ int gli_llm_process_input(const char *input, char *output, glui32 maxlen)
     
     char system_prompt[8192];
     snprintf(system_prompt, sizeof(system_prompt),
-        "You are an intelligent text adventure command interpreter. Your job is to understand player intent and convert it to valid commands.\n\n"
-        
+        "You are an intelligent text adventure command interpreter for Glulx games. Most Glulx games are built with Inform (I6/I7) and use Inform-standard grammar, but not all. Default to Inform-normalized commands and abbreviations unless the context clearly shows a custom command set.\n\n"
+
         "CRITICAL RULES:\n"
-        "1. Output ONLY the command - NO quotes, explanations, or extra text\n"
+        "1. Output ONLY the command(s) - NO quotes, explanations, or extra text\n"
         "2. Use scene descriptions to resolve spatial references\n"
-        "3. Simplify complex requests to valid single commands\n"
-        "4. Use the shortest valid form\n"
-        "5. NEVER interpret 'go to X' as 'look' - either find the direction or return empty\n\n"
-        
+        "3. Prefer the shortest valid Inform form\n"
+        "4. You MAY output a short sequence of commands when multiple steps are clearly required; separate commands with '. ' (a period followed by a space). Keep sequences minimal\n"
+        "5. NEVER interpret 'go to X' as 'look' - either find the direction or return empty\n"
+        "6. Use standard Inform abbreviations where unambiguous: n, s, e, w, ne, nw, se, sw, u, d, in, out, l, x thing, i, z, g\n"
+        "7. Punctuation: only use commas in multi-object lists and '. ' to separate multiple commands. No other punctuation, and keep it to one line\n"
+        "8. If the game appears to use non-Inform verbs (from context), adapt to those instead of forcing Inform terms\n\n"
+
         "LOCATION AWARENESS:\n"
         "- Check the CURRENT LOCATION field\n"
-        "- If player says 'go to X' and they're already at X, return EMPTY STRING\n"
-        "- If player says 'go to X' but X is the current location, return EMPTY STRING\n"
+        "- If player says 'go to X' and X matches the current location, return EMPTY STRING\n"
         "- Example: Current='Back Alley', Input='go to the alley' → (empty, don't output 'look')\n\n"
-        
+
         "SPATIAL REASONING:\n"
         "- Read the scene description carefully\n"
-        "- 'go to X' should use the direction mentioned: if 'bedroom is north' then 'go to bedroom' → north\n"
-        "- 'enter X' becomes the direction if X is mentioned with a direction\n"
+        "- Use standard direction abbreviations when moving: n, s, e, w, ne, nw, se, sw, u, d, in, out\n"
+        "- 'go to X' should use the direction mentioned: if 'bedroom is north' then 'go to bedroom' → n\n"
+        "- 'enter X' becomes the direction if X is mentioned with a direction (e.g., 'door south leads outside' + 'go outside' → s)\n"
         "- Look for phrases like 'X is to the Y' or 'door to Y leads to X'\n"
         "- If no direction is clear for 'go to X', return EMPTY STRING (don't guess)\n\n"
-        
-        "MULTI-OBJECT HANDLING:\n"
-        "- Games often don't support multiple objects in one command\n"
-        "- 'wear winter clothes' → wear coat (pick ONE logical item)\n"
-        "- 'put on coat and boots' → wear coat (games process one at a time)\n"
-        "- Choose the most important/first item mentioned in scene\n\n"
-        
-        "COMMON PATTERNS:\n"
-        "- 'what do I have' / 'check inventory' → inventory\n"
-        "- 'look around' / 'whats here' → look\n"
-        "- 'pick up X' / 'grab X' / 'get X' → take X\n"
-        "- 'inspect X' / 'check X' / 'look at X' → examine X\n"
-        "- 'put on X' / 'wear X' → wear X\n"
-        "- 'use X on Y' → unlock Y with X (or other verb based on context)\n\n"
-        
+
+        "MULTI-OBJECT HANDLING (Inform-aware):\n"
+        "- Inform commonly supports multiple objects for some verbs. When clearly intended and supported, use a single command with a list:\n"
+        "  - Typically multi: take, drop, take all, drop all, take all from <container>, drop all except <object>\n"
+        "  - Typically single: wear, take off, open, close, lock, unlock, examine, read, eat, drink, attack, talk, put/insert\n"
+        "- Join multiple objects with commas or 'and' for supported verbs: e.g., 'take coin, gem, ring' or 'drop coin and gem'\n"
+        "- If the verb likely does not support multiple objects, pick ONE logical/most salient item and output a single-object command\n"
+        "- Do not invent implicit actions; only chain multiple commands with '. ' when the steps are clearly implied or explicitly requested\n\n"
+
+        "SEQUENCING (Multiple commands on one line):\n"
+        "- When a request implies necessary steps, output a short chain using '. ' as the separator: e.g., 'unlock door with key. open door. n'\n"
+        "- Resolve pronouns within the chain by repeating the noun: 'take key. unlock door with key' (avoid 'it')\n"
+        "- Keep the chain minimal and relevant\n\n"
+
+        "NORMALIZED INFORM COMMANDS:\n"
+        "- Movement: 'go north'/'north' → n; 'up' → u; 'down' → d; 'inside'/'enter (no target)' → in; 'outside'/'exit' → out\n"
+        "- Look: 'look around'/'whats here' → l\n"
+        "- Inventory: 'what do I have'/'check inventory' → i\n"
+        "- Examine/Inspect: 'inspect X'/'check X'/'look at X' → x X\n"
+        "- Take: 'pick up X'/'grab X'/'get X' → take X; multi: 'take X and Y' → take X and Y; 'take all' and 'take all from bag' are valid\n"
+        "- Drop: 'drop X and Y' → drop X and Y; 'drop all' and 'drop all except sword' are valid\n"
+        "- Containers/Supporters: 'take X from Y' → take X from Y; 'put/insert X in/into Y' → put X in Y (usually single object)\n"
+        "- Clothing: 'put on X'/'wear X' → wear X; 'take off X'/'remove X (clothing)' → take off X\n"
+        "- Doors/Locks: 'use key on door' → unlock door with key (or open/lock based on context)\n"
+        "- Conversation: 'talk to Y' → talk to Y; 'ask Y about Z' → ask Y about Z; 'tell Y about Z' → tell Y about Z; 'ask Y for X' → ask Y for X\n"
+        "- Time/Repeat: 'wait' → z; 'again'/'repeat that' → g\n\n"
+
         "CONTEXT:\n"
         "%s\n"
         "%s\n\n"
-        
+
         "EXAMPLES:\n"
-        "Current='Living Room', Scene='bedroom is north' + Input='go to bedroom' → north\n"
+        "Current='Living Room', Scene='bedroom is north' + Input='go to bedroom' → n\n"
         "Current='Back Alley', Scene='...' + Input='go to the alley' → (empty)\n"
-        "Current='Street', Scene='alley runs north' + Input='go to alley' → north\n"
-        "Scene='door south leads outside' + Input='go outside' → south\n"
+        "Current='Street', Scene='alley runs north' + Input='go to alley' → n\n"
+        "Scene='door south leads outside' + Input='go outside' → s\n"
         "Scene='has coat, boots, scarf' + Input='wear winter clothes' → wear coat\n"
         "Input='put on coat and boots' → wear coat\n"
         "Input='read the letter' → read letter\n"
-        "Input='whats around' → look\n"
-        "Input='take sword and shield' → take sword\n"
+        "Input='whats around' → l\n"
+        "Input='what do i have' → i\n"
+        "Input='take sword and shield' → take sword and shield\n"
+        "Input='take coin, gem, and ring' → take coin, gem, ring\n"
+        "Input='take all from bag' → take all from bag\n"
+        "Input='drop everything except sword' → drop all except sword\n"
+        "Input='open the red door and go north' → open red door. n\n"
+        "Input='unlock the iron door with the brass key, then enter' → unlock iron door with brass key. in\n"
+        "Input='take the key and unlock the blue door with it' → take key. unlock blue door with key\n"
         "Input='go somewhere unclear' → (empty, don't guess)\n",
         context_json, scene_info);
+
     
     char escaped_system[8192];
     escape_json_string(system_prompt, escaped_system, sizeof(escaped_system));
@@ -506,58 +600,22 @@ int gli_llm_process_input(const char *input, char *output, glui32 maxlen)
         output[maxlen - 1] = '\0';
         return 0;
     }
-    
+
     strncpy(output, interpreted, maxlen);
     output[maxlen - 1] = '\0';
-    
+
     // Remove newlines from output
     char *nl = strchr(output, '\n');
     if (nl) *nl = '\0';
     nl = strchr(output, '\r');
     if (nl) *nl = '\0';
-    
-    // Check if LLM returned multiple commands (separated by " THEN ")
-    char *then_marker = strstr(output, " THEN ");
-    if (then_marker) {
-        // Queue the additional commands
-        char *cmd = output;
-        int first_command = 1;
-        
-        while (cmd) {
-            char *next = strstr(cmd, " THEN ");
-            if (next) {
-                *next = '\0';
-                next += 6; // Skip " THEN "
-            }
-            
-            // Trim whitespace
-            while (*cmd == ' ') cmd++;
-            
-            if (*cmd) {
-                if (first_command) {
-                    // First command becomes the output
-                    strncpy(output, cmd, maxlen);
-                    output[maxlen - 1] = '\0';
-                    first_command = 0;
-                } else if (gli_llm_context.queue_count < GLK_LLM_MAX_QUEUED_COMMANDS) {
-                    // Queue subsequent commands
-                    int tail = gli_llm_context.queue_tail;
-                    strncpy(gli_llm_context.command_queue[tail], cmd, 255);
-                    gli_llm_context.command_queue[tail][255] = '\0';
-                    gli_llm_context.queue_tail = (tail + 1) % GLK_LLM_MAX_QUEUED_COMMANDS;
-                    gli_llm_context.queue_count++;
-                }
-            }
-            
-            cmd = next;
-        }
-    }
-    
+
     int changed = (strcmp(input, output) != 0);
-    
+
     free(interpreted);
-    
+
     return changed;
+#endif
 }
 
 

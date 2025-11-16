@@ -411,10 +411,12 @@ void glk_window_clear(window_t *win)
         return;
     }
     
+#ifndef WASM_BUILD
     if (mainwin->line_request) {
         gli_strict_warning("window_clear: window has pending line request");
         return;
     }
+#endif
 
     for (ix=0; ix<gli_screenheight; ix++) {
         putc('\n', stdout);

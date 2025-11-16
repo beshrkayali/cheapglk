@@ -664,10 +664,12 @@ static void gli_put_char(stream_t *str, unsigned char ch)
             }
             break;
         case strtype_Window:
+#ifndef WASM_BUILD
             if (str->win->line_request) {
                 gli_strict_warning("put_char: window has pending line request");
                 break;
             }
+#endif
             /* Normal output */
             if (!gli_utf8output) 
                 putc(ch, stdout);
@@ -748,10 +750,12 @@ static void gli_put_char_uni(stream_t *str, glui32 ch)
             }
             break;
         case strtype_Window:
+#ifndef WASM_BUILD
             if (str->win->line_request) {
                 gli_strict_warning("put_char_uni: window has pending line request");
                 break;
             }
+#endif
             /* If you're going to convert Latin-1 to a different 
                 character set, this is (a) place to do it. Only on the 
                 putc(); not on the gli_put_char to echostr. */
@@ -846,10 +850,12 @@ static void gli_put_buffer(stream_t *str, char *buf, glui32 len)
             }
             break;
         case strtype_Window:
+#ifndef WASM_BUILD
             if (str->win->line_request) {
                 gli_strict_warning("put_buffer: window has pending line request");
                 break;
             }
+#endif
             /* If you're going to convert Latin-1 to a different 
                 character set, this is (a) place to do it. Only on the 
                 fwrite(); not on the gli_put_buffer to echostr. */

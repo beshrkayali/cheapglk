@@ -1,3 +1,6 @@
 *.o
 *.a
 Make.*
+*.wasm.o
+*.wasm.a
+libcheapglk.wasm.a

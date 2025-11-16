@@ -57,20 +57,6 @@ A door to the north leads to the bedroom.
 [LLM: "go to the bedroom" -> "north"]
 ```
 
-When a player asks for something that involves multiple objects, the LLM generates a sequence of commands and can be executed automatically in logical order:
-
-```
-A coat rack with winter coat, scarf, and boots.
-
-> wear winter clothes
-[LLM: "wear winter clothes" -> "wear coat"]
-[Auto: wear boots]
-[Auto: wear scarf]
-You put on the coat.
-You put on the boots.
-You put on the scarf.
-```
-
 The system understands the current position to avoid nonsensical interpretations. If you're already in a location, asking to go there gets caught:
 
 ```
@@ -162,6 +148,8 @@ model=llama2
 
 ## Building
 
+### Native Build (CLI)
+
 Requires OpenSSL for HTTPS API calls:
 
 ```bash
@@ -172,10 +160,39 @@ brew install openssl
 apt-get install libssl-dev
 
 # Build
-make clean && make
+make
 ```
 
 Then rebuild any IF interpreters (e.g., glulxe) that link against this library.
+
+### WebAssembly Build (Browser)
+
+Requires [Emscripten SDK](https://emscripten.org/):
+
+```bash
+# Install Emscripten
+cd ..
+git clone https://github.com/emscripten-core/emsdk.git
+cd emsdk
+./emsdk install latest
+./emsdk activate latest
+source ./emsdk_env.sh
+
+# Build
+cd ../cheapglk
+make wasm
+```
+
+The WASM build creates `libcheapglk.wasm.a` which can be linked by WASM-compiled interpreters like glulxe.
+
+For browser usage, see the glulxe repository for the complete web interface.
+
+### Cleaning
+
+```bash
+make clean        # Clean native build
+make clean-wasm   # Clean WASM build only
+```
 
 ### Limitations
 
